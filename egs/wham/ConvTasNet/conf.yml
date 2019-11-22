@@ -5,9 +5,12 @@ filterbank:
   stride: 8
 # Network config
 masknet:
-  n_blocks: 3
-  n_repeats: 2
+  n_blocks: 2
+  n_repeats: 1
   mask_act: relu
+  bn_chan: 12
+  hid_chan: 12
+  skip_chan: 12
 # Training config
 training:
   epochs: 100
