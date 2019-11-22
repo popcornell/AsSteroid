@@ -15,9 +15,6 @@ from ignite.engine import Engine, Events
 from ignite.handlers import ModelCheckpoint, Timer
 from ignite.metrics import RunningAverage
 
-# Keys which are not in the conf.yml file can be added here.
-# In the hierarchical dictionary created when parsing, the key `key` can be
-# found at dic['main_args'][key]
 parser = argparse.ArgumentParser()
 parser.add_argument('--use_cuda', type=int, default=0,
                     help='Whether use GPU')
@@ -43,32 +40,25 @@ def main(conf):
     loaders = {'train_loader': train_loader, 'val_loader': val_loader}
 
     # Define model
-
-    # First define the encoder and the decoder.
-    # This can be either done by passing a string and the config
-    # dictionary (with number of filters, filter size and stride, see conf.yml)
-    # to fb.make_enc_dec.
     enc, dec = fb.make_enc_dec('free', **conf['filterbank'])
-    # Or done by instantiating the filterbanks and passing them to the
-    # Encoder and Decoder classes, as follows :
-    # enc = fb.Encoder(fb.FreeFB(**conf['filterbank']))
-    # dec = fb.Encoder(fb.FreeFB(**conf['filterbank']))
-
-    # Define the mask network with input and output dimensions dictated by
-    # by the encoder (also passing a dictionary defined in conf.yml).
     masker = TDConvNet(in_chan=enc.filterbank.n_feats_out,
                        out_chan=enc.filterbank.n_feats_out,
                        n_src=train_set.n_src, **conf['masknet'])
-    # Pass the encoder, masker and decoder to the container class which
-    # handles the forward for such architectures
     model = nn.DataParallel(Container(enc, masker, dec))
     if conf['main_args']['use_cuda']:
         model.cuda()
-    # Define Loss function
     loss_class = PITLossContainer(pairwise_neg_sisdr, n_src=train_set.n_src)
-    # Define optimizer
     optimizer = make_optimizer(model.parameters(), **conf['optim'])
 
+    """ Comments
+    The function `step` uses global variables and that's how ignite was 
+    designed. I'm not sure it cannot have some bad behaviour but it's not so
+    pretty.
+    It needs quite a lot of lines to define checkpointing and callbacks but it 
+    looks easily extendable (also with lots of lines).
+    """
+
+    # ============================== IGNITE SPECIFIC ==========================
     def step(engine, data):
         inputs, targets, infos = data
         est_targets = model(inputs)
@@ -101,16 +91,11 @@ def main(conf):
     # adding handlers using `trainer.on` decorator API
     @trainer.on(Events.EPOCH_COMPLETED)
     def print_times(engine):
-        pbar.log_message('Epoch {} done. Time per batch: {:.3f}[s]'.format(engine.state.epoch, timer.value()))
+        pbar.log_message('Epoch {} done. Time per batch: '
+                         '{:.3f}[s]'.format(engine.state.epoch, timer.value()))
         timer.reset()
 
-    # # Pass everything to the solver with a training dicitonary defined in
-    # # the conf.yml file. Finally, call .train() and that's it.
-    # solver = Solver(loaders, model, loss_class, optimizer,
-    #                 model_path=conf['main_args']['model_path'],
-    #                 **conf['training'])
-    # solver.train()
-    return trainer
+    # =========================================================================
 
 
 if __name__ == '__main__':
@@ -131,4 +116,4 @@ if __name__ == '__main__':
     # have it so we included it here but it is not used.
     arg_dic, plain_args = parse_args_as_dict(parser, return_plain_args=True)
 
-    trainer = main(arg_dic)
+    main(arg_dic)
