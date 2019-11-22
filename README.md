@@ -42,6 +42,33 @@ Analysis only (can be extended)
 * [ ] Parametrized Gammatone ([Openreview](https://openreview.net/forum?id=HyewT1BKvr))
 * [ ] Parametrized Gammachirp ([Openreview](https://openreview.net/forum?id=HyewT1BKvr))
 
+```
+AsSteroid
+ 
+│
+└──asteroid
+│   └───engine
+│       │   file111.txt
+│       │   file112.txt
+│       └──   ...
+│   └───filterbanks
+│       │   file111.txt
+│       │   file112.txt
+│       └──   ...
+│   └───masknn
+│       │   file111.txt
+│       │   file112.txt
+│       └──   ...
+│   
+└───egs
+│   │   file011.txt
+│   │   file012.txt
+│   
+└───tests
+│
+│   README.md
+│   file001.txt   
+```
 ## Running a recipe
 
 ## Writing your own recipe
