@@ -170,12 +170,10 @@ class AugmentedWhamDataset(data.Dataset):
             targets.
             If None, defaults to one for enhancement tasks and two for
             separation tasks.
-        random_gain: (tuple, optional): Minimum and maximum bounds for mix energy (dB).
-        max_db_diff: (tuple, optional): Minimum and maximum bounds
-                                        for difference in dB between one of two sources in the mix
+        random_gain: (tuple, optional): Minimum and maximum bounds for each source (and noise) (dB).
     """
     def __init__(self, wsj_train_dir, task, noise_dir=None, sample_rate=8000, segment=4.0,
-                 nondefault_nsrc=None, random_gain=(-12, 0), max_db_diff=(-6, 0)):
+                 nondefault_nsrc=None, random_gain=(-23, 0)):
         super(AugmentedWhamDataset, self).__init__()
         if task not in WHAM_TASKS.keys():
             raise ValueError('Unexpected task {}, expected one of '
@@ -188,7 +186,6 @@ class AugmentedWhamDataset(data.Dataset):
         self.sample_rate = sample_rate
         self.seg_len = None if segment is None else int(segment * sample_rate)
         self.random_gain = random_gain
-        self.max_db_diff = max_db_diff
         if not nondefault_nsrc:
             self.n_src = self.task_dict['default_nsrc']
         else:
@@ -196,10 +193,10 @@ class AugmentedWhamDataset(data.Dataset):
             self.n_src = nondefault_nsrc
         self.like_test = self.seg_len is None
         # Load json files
-        utterances = glob.glob(os.path.join(wsj_train_dir, "*.wav"))
+        utterances = glob.glob(os.path.join(wsj_train_dir, "/**/*.wav"), recursive=True)
         noises = None
         if self.task in ["sep_clean", "enh_clean"]:
-            noises = glob.glob(os.path.join(wsj_train_dir, "*.wav"))
+            noises = glob.glob(os.path.join(wsj_train_dir, "**/*.wav"), recursive=True)
 
         # parse utterances according to speaker
         drop_utt, drop_len = 0, 0
@@ -270,8 +267,7 @@ class AugmentedWhamDataset(data.Dataset):
             tmp, tmp_spk_len = np.random.choice(self.examples[c_speakers[spk]], 1)
             tmp = self.get_random_subsegment(tmp, self.seg_len, tmp_spk_len)
             tmp = tmp / (np.max(np.abs(tmp)) + 1e-7)
-            if i != 0:
-                tmp = tmp* (10 ** (np.random.randint(self.max_db_diff[0], self.max_db_diff[1]) / 20 ) )
+            tmp = tmp*(10 ** (np.random.randint(self.random_gain[0], self.random_gain[1]) / 20 ) )
             sources.append(tmp)
 
         if self.examples["noise"]:
@@ -279,7 +275,7 @@ class AugmentedWhamDataset(data.Dataset):
             tmp, tmp_spk_len = np.random.choice(self.examples["noise"], 1)
             tmp = self.get_random_subsegment(tmp, self.seg_len, tmp_spk_len)
             tmp = tmp / (np.max(np.abs(tmp)) + 1e-7)
-            tmp = tmp * (10 ** (np.random.randint(self.max_db_diff[0], self.max_db_diff[1]) / 20))
+            tmp = tmp * (10 ** (np.random.randint(self.random_gain[0], self.random_gain[1]) / 20))
             sources.append(tmp)
 
         mix = np.mean(np.stack(sources), 0)
@@ -290,3 +286,7 @@ class AugmentedWhamDataset(data.Dataset):
         sources = np.stack(sources)
 
         return torch.from_numpy(mix), sources
+
+
+if __name__ == "__main__":
+    a = AugmentedWhamDataset("", "sep_clean", "/media/sam/Data/WSJ/wham_noise/tr/")
