@@ -262,7 +262,7 @@ class AugmentedWhamDataset(data.Dataset):
     def random_data_augmentation(self, signal, gain_db_range):
         # factor is a tuple
         c_gain = np.random.randint(*gain_db_range)
-        speed = 1.15 #random.uniform(*self.speed_perturb)
+        speed = random.uniform(*self.speed_perturb)
 
         fx = ( AudioEffectsChain().speed(speed).custom("norm {}".format(c_gain)) )
 
