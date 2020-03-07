@@ -277,7 +277,12 @@ class AugmentedWhamDataset(data.Dataset):
         if desired_len < tot_length:
             offset = np.random.randint(0, tot_length - desired_len)
 
-        return sf.read(array, start=offset, stop= offset + desired_len)[0]
+        out, _ = sf.read(array, start=offset, stop= offset + desired_len)
+
+        if len(out.shape) > 1:
+            out = out[:, random.randint(0,1)]
+
+        return out
 
     def __getitem__(self, idx):
         """ Gets a mixture/sources pair.
@@ -306,8 +311,9 @@ class AugmentedWhamDataset(data.Dataset):
 
         if self.examples["noise"]:
             # add also noise
-            tmp, tmp_spk_len = np.random.choice(self.examples["noise"], 1)
-            tmp = self.get_random_subsegment(tmp, self.seg_len, tmp_spk_len)
+            tmp, tmp_spk_len = random.choice(self.examples["noise"])
+            target_len = int(np.ceil(self.speed_perturb[1] * self.seg_len))
+            tmp = self.get_random_subsegment(tmp, target_len, tmp_spk_len)
             gains =  (first_lvl - self.max_rel_db_noise, min(first_lvl + self.max_rel_db_noise, 0))
             tmp, _ = self.random_data_augmentation(tmp, gains)
             sources.append(tmp)
@@ -324,7 +330,7 @@ class AugmentedWhamDataset(data.Dataset):
 
 
 if __name__ == "__main__":
-    augm = AugmentedWhamDataset("/media/sam/Data/WSJ/WSJ/wsj0/si_tr_s/", "sep_clean")
+    augm = AugmentedWhamDataset("/media/sam/Data/WSJ/WSJ/wsj0/si_tr_s/", "sep_noisy", "/media/sam/Data/WSJ/wham_noise/tr/")
 
     for e in augm:
         print(e[0].shape)
