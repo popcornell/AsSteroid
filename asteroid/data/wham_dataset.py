@@ -5,6 +5,8 @@ import os
 import numpy as np
 import soundfile as sf
 import glob
+import random
+from pysndfx.dsp import AudioEffectsChain
 
 DATASET = 'WHAM'
 # WHAM tasks
@@ -170,10 +172,14 @@ class AugmentedWhamDataset(data.Dataset):
             targets.
             If None, defaults to one for enhancement tasks and two for
             separation tasks.
-        random_gain: (tuple, optional): Minimum and maximum bounds for each source (and noise) (dB).
+        absolute_db_range: (tuple, optional): Minimum and maximum bounds for each source (and noise) (dB).
+        max_rel_db_sources: (int, optional): Maximum relative difference in dB between the sources.
+        max_rel_db_noise: (int, optional): Maximum relative difference between most energetic source and noise in dB.
+        spped_perturb: (int, optional): Range for SoX speed perturbation transformation.
     """
     def __init__(self, wsj_train_dir, task, noise_dir=None, sample_rate=8000, segment=4.0,
-                 nondefault_nsrc=None, random_gain=(-23, 0)):
+                 nondefault_nsrc=None, absolute_db_range=(-40, 0), max_rel_db_sources=10,
+                 max_rel_db_noise=15, speed_perturb=(0.9, 1.15)):
         super(AugmentedWhamDataset, self).__init__()
         if task not in WHAM_TASKS.keys():
             raise ValueError('Unexpected task {}, expected one of '
@@ -185,7 +191,17 @@ class AugmentedWhamDataset(data.Dataset):
         self.task_dict = WHAM_TASKS[task]
         self.sample_rate = sample_rate
         self.seg_len = None if segment is None else int(segment * sample_rate)
-        self.random_gain = random_gain
+
+        if self.task in ["sep_noisy", "enh_single"]:
+            absolute_db_range = (absolute_db_range[0] - max(max_rel_db_noise, max_rel_db_sources), absolute_db_range[1])
+        else:
+            absolute_db_range = (absolute_db_range[0] -  max_rel_db_sources, absolute_db_range[1])
+
+        self.absolute_db_range = absolute_db_range
+        self.max_rel_db_sources = max_rel_db_sources
+        self.max_rel_db_noise = max_rel_db_noise
+        self.speed_perturb = speed_perturb
+
         if not nondefault_nsrc:
             self.n_src = self.task_dict['default_nsrc']
         else:
@@ -193,10 +209,10 @@ class AugmentedWhamDataset(data.Dataset):
             self.n_src = nondefault_nsrc
         self.like_test = self.seg_len is None
         # Load json files
-        utterances = glob.glob(os.path.join(wsj_train_dir, "/**/*.wav"), recursive=True)
+        utterances = glob.glob(os.path.join(wsj_train_dir, "**/*.wav"), recursive=True)
         noises = None
-        if self.task in ["sep_clean", "enh_clean"]:
-            noises = glob.glob(os.path.join(wsj_train_dir, "**/*.wav"), recursive=True)
+        if self.task in ["sep_noisy", "enh_clean"]:
+            noises = glob.glob(os.path.join(noise_dir, "*.wav"))
 
         # parse utterances according to speaker
         drop_utt, drop_len = 0, 0
@@ -205,7 +221,7 @@ class AugmentedWhamDataset(data.Dataset):
         for utt in utterances:
             # exclude if too short
             c_len = len(sf.SoundFile(utt))
-            if  c_len < self.seg_len:
+            if  c_len < int(np.ceil(self.speed_perturb[1]*self.seg_len)): # speed perturbation
                 drop_utt += 1
                 drop_len += c_len
                 continue
@@ -218,20 +234,20 @@ class AugmentedWhamDataset(data.Dataset):
         print("Drop {} utts({:.2f} h) from {} (shorter than {} samples)".format(
             drop_utt, drop_len / sample_rate / 36000, len(utterances), self.seg_len))
 
-        examples_hashtab = {"noise": []} # not  bug will use this in __getitem__
+        examples_hashtab["noise"] = [] # not  bug will use this in __getitem__
 
         drop_utt, drop_len = 0, 0
         if noises:
             for noise in noises:
                 c_len = len(sf.SoundFile(noise))
-                if c_len < self.seg_len:
+                if c_len < int(np.ceil(self.speed_perturb[1]*self.seg_len)): # speed perturbation
                     drop_utt += 1
                     drop_len += c_len
                     continue
                 examples_hashtab["noise"].append((noise, c_len))
 
-        print("Drop {} noises({:.2f} h) from {} (shorter than {} samples)".format(
-            drop_utt, drop_len / sample_rate / 36000, len(noises), self.seg_len))
+            print("Drop {} noises({:.2f} h) from {} (shorter than {} samples)".format(
+                drop_utt, drop_len / sample_rate / 36000, len(noises), self.seg_len))
 
         self.examples = examples_hashtab
 
@@ -243,6 +259,16 @@ class AugmentedWhamDataset(data.Dataset):
 
         return min([len(self.examples[x]) for x in self.examples.keys()])
 
+    def random_data_augmentation(self, signal, gain_db_range):
+        # factor is a tuple
+        c_gain = np.random.randint(*gain_db_range)
+        speed = 1.15 #random.uniform(*self.speed_perturb)
+
+        fx = ( AudioEffectsChain().speed(speed).custom("norm {}".format(c_gain)) )
+
+        signal = fx(signal)
+
+        return signal, c_gain
 
     @staticmethod
     def get_random_subsegment(array, desired_len, tot_length):
@@ -251,8 +277,7 @@ class AugmentedWhamDataset(data.Dataset):
         if desired_len < tot_length:
             offset = np.random.randint(0, tot_length - desired_len)
 
-        return array[offset: offset + desired_len]
-
+        return sf.read(array, start=offset, stop= offset + desired_len)[0]
 
     def __getitem__(self, idx):
         """ Gets a mixture/sources pair.
@@ -263,30 +288,43 @@ class AugmentedWhamDataset(data.Dataset):
         c_speakers = np.random.choice([x for x in self.examples.keys() if x != "noise"], self.n_src)
 
         sources = []
+        first_lvl = None
         for i, spk in enumerate(c_speakers):
-            tmp, tmp_spk_len = np.random.choice(self.examples[c_speakers[spk]], 1)
-            tmp = self.get_random_subsegment(tmp, self.seg_len, tmp_spk_len)
-            tmp = tmp / (np.max(np.abs(tmp)) + 1e-7)
-            tmp = tmp*(10 ** (np.random.randint(self.random_gain[0], self.random_gain[1]) / 20 ) )
+            tmp, tmp_spk_len = random.choice(self.examples[c_speakers[i]])
+            # account for sample reduction in speed perturb
+            target_len = int(np.ceil(self.speed_perturb[1]*self.seg_len))
+            tmp = self.get_random_subsegment(tmp, target_len, tmp_spk_len)
+            # why this ? because on training set there is linear correlation beween gains of sources and noise in same example
+            gains = self.absolute_db_range if i == 0 else (first_lvl - self.max_rel_db_sources,
+                                                                      min(first_lvl + self.max_rel_db_sources, 0))
+            tmp, c_lvl = self.random_data_augmentation(tmp, gains)
+            tmp = tmp[:self.seg_len]
+            if i == 0:
+                first_lvl = c_lvl
+
             sources.append(tmp)
 
         if self.examples["noise"]:
             # add also noise
             tmp, tmp_spk_len = np.random.choice(self.examples["noise"], 1)
             tmp = self.get_random_subsegment(tmp, self.seg_len, tmp_spk_len)
-            tmp = tmp / (np.max(np.abs(tmp)) + 1e-7)
-            tmp = tmp * (10 ** (np.random.randint(self.random_gain[0], self.random_gain[1]) / 20))
+            gains =  (first_lvl - self.max_rel_db_noise, min(first_lvl + self.max_rel_db_noise, 0))
+            tmp, _ = self.random_data_augmentation(tmp, gains)
             sources.append(tmp)
 
         mix = np.mean(np.stack(sources), 0)
 
         if self.examples["noise"]:
-            sources = sources[:-1]
+            sources = sources[:-1] # discard noise
 
         sources = np.stack(sources)
 
         return torch.from_numpy(mix), sources
 
 
+
 if __name__ == "__main__":
-    a = AugmentedWhamDataset("", "sep_clean", "/media/sam/Data/WSJ/wham_noise/tr/")
+    augm = AugmentedWhamDataset("/media/sam/Data/WSJ/WSJ/wsj0/si_tr_s/", "sep_clean")
+
+    for e in augm:
+        print(e[0].shape)
