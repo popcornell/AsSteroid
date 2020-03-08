@@ -319,7 +319,7 @@ class AugmentedWhamDataset(data.Dataset):
 
         mix = np.mean(np.stack(sources), 0)
 
-        if self.task in ["sep_noiys", "enh_clean"]:
+        if self.task in ["sep_noisy", "enh_clean"]:
             sources = sources[:-1] # discard noise
 
         sources = np.stack(sources)
