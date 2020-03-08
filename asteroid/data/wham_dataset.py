@@ -234,10 +234,9 @@ class AugmentedWhamDataset(data.Dataset):
         print("Drop {} utts({:.2f} h) from {} (shorter than {} samples)".format(
             drop_utt, drop_len / sample_rate / 36000, len(utterances), self.seg_len))
 
-        examples_hashtab["noise"] = [] # not  bug will use this in __getitem__
-
         drop_utt, drop_len = 0, 0
         if noises:
+            examples_hashtab["noise"] = []
             for noise in noises:
                 c_len = len(sf.SoundFile(noise))
                 if c_len < int(np.ceil(self.speed_perturb[1]*self.seg_len)): # speed perturbation
@@ -257,7 +256,7 @@ class AugmentedWhamDataset(data.Dataset):
 
     def __len__(self):
 
-        return min([len(self.examples[x]) for x in self.examples.keys()])
+        return sum([len(self.examples[x]) for x in self.examples.keys()])
 
     def random_data_augmentation(self, signal, gain_db_range):
         # factor is a tuple
@@ -309,7 +308,7 @@ class AugmentedWhamDataset(data.Dataset):
 
             sources.append(tmp)
 
-        if self.examples["noise"]:
+        if self.task in ["sep_noisy", "enh_clean"]:
             # add also noise
             tmp, tmp_spk_len = random.choice(self.examples["noise"])
             target_len = int(np.ceil(self.speed_perturb[1] * self.seg_len))
@@ -320,12 +319,12 @@ class AugmentedWhamDataset(data.Dataset):
 
         mix = np.mean(np.stack(sources), 0)
 
-        if self.examples["noise"]:
+        if self.task in ["sep_noiys", "enh_clean"]:
             sources = sources[:-1] # discard noise
 
         sources = np.stack(sources)
 
-        return torch.from_numpy(mix), sources
+        return torch.from_numpy(mix).float(), torch.from_numpy(sources).float()
 
 
 
