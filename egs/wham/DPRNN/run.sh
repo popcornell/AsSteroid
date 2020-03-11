@@ -3,7 +3,7 @@
 set -e  # Exit on error
 # Main storage directory. You'll need disk space to dump the WHAM mixtures and the wsj0 wav
 # files if you start from sphere files.
-storage_dir=/media/sam/cb915f0e-e440-414c-bb74-df66b311d09d/
+storage_dir=/home/scornell/wham
 
 # If you start from the sphere files, specify the path to the directory and start from stage 0
 sphere_dir=  # Directory containing sphere files
@@ -20,12 +20,12 @@ python_path=python
 
 # Example usage
 # ./run.sh --stage 3 --tag my_tag --task sep_noisy --id 0,1
-
+export CUDA_VISIBLE_DEVICES=1
 # General
-stage=0  # Controls from which stage to start
-tag=""  # Controls the directory name associated to the experiment
+stage=3  # Controls from which stage to start
+tag="plain"  # Controls the directory name associated to the experiment
 # You can ask for several GPUs using id (passed to CUDA_VISIBLE_DEVICES)
-id=0
+id=1
 
 # Data
 data_dir=data  # Local data directory (No disk space needed)
@@ -39,7 +39,7 @@ batch_size=8
 num_workers=8
 #optimizer=adam
 lr=0.001
-epochs=200
+epochs=300
 
 # Evaluation
 eval_use_gpu=1
@@ -79,8 +79,8 @@ fi
 if [[ $stage -le  2 ]]; then
 	# Make json directories with min/max modes and sampling rates
 	echo "Stage 2: Generating json files including wav path and duration"
-	for sr_string in 8 16; do
-		for mode in min max; do
+	for sr_string in 8; do
+		for mode in min; do
 			tmp_dumpdir=data/wav${sr_string}k/$mode
 			echo "Generating json files in $tmp_dumpdir"
 			[[ ! -d $tmp_dumpdir ]] && mkdir -p $tmp_dumpdir

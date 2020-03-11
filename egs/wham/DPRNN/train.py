@@ -8,9 +8,9 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
-from asteroid.data.wham_dataset import WhamDataset
-from asteroid.engine.system import System
+from asteroid.data.wham_dataset import WhamDataset, AugmentedWhamDataset
 from asteroid.losses import PITLossWrapper, pairwise_neg_sisdr
+from asteroid.engine import System
 
 from model import make_model_and_optimizer
 
@@ -29,7 +29,12 @@ parser.add_argument('--exp_dir', default='exp/tmp',
 
 
 def main(conf):
-    train_set = WhamDataset(conf['data']['train_dir'], conf['data']['task'],
+
+    if conf["data"]["data_augm"] == True:
+        train_set = AugmentedWhamDataset(conf["data"]["wsj_dir"], conf["data"]["task"],
+                                         segment=conf["data"]["segment"])
+    else:
+        train_set = WhamDataset(conf['data']['train_dir'], conf['data']['task'],
                             sample_rate=conf['data']['sample_rate'], segment=conf['data']['segment'],
                             nondefault_nsrc=conf['data']['nondefault_nsrc'])
     val_set = WhamDataset(conf['data']['valid_dir'], conf['data']['task'],

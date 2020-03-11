@@ -20,7 +20,6 @@ setup(
                       'pyyaml',
                       'soundfile',
                       'torch',
-                      'torchvision',
                       'pytorch-lightning==0.6.0'],
     extras_require={
         'visualize': ['seaborn>=0.9.0'],

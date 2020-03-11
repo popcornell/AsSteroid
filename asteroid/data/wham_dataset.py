@@ -179,7 +179,7 @@ class AugmentedWhamDataset(data.Dataset):
     """
     def __init__(self, wsj_train_dir, task, noise_dir=None, sample_rate=8000, segment=4.0,
                  nondefault_nsrc=None, absolute_db_range=(-40, 0), max_rel_db_sources=10,
-                 max_rel_db_noise=15, speed_perturb=(0.9, 1.15)):
+                 max_rel_db_noise=15, speed_perturb=(0.95, 1.15)):
         super(AugmentedWhamDataset, self).__init__()
         if task not in WHAM_TASKS.keys():
             raise ValueError('Unexpected task {}, expected one of '
@@ -259,11 +259,20 @@ class AugmentedWhamDataset(data.Dataset):
         return sum([len(self.examples[x]) for x in self.examples.keys()])
 
     def random_data_augmentation(self, signal, gain_db_range):
+
+        from scipy.signal import resample_poly
+        signal = resample_poly(signal, 8000, 16000)
         # factor is a tuple
         c_gain = np.random.randint(*gain_db_range)
         speed = random.uniform(*self.speed_perturb)
 
-        fx = ( AudioEffectsChain().speed(speed).custom("norm {}".format(c_gain)) )
+        if self.sample_rate != 16000: # wsj is 16k
+            # probably resampling and speed con be same operation
+            fx = ( AudioEffectsChain().speed(speed).custom("norm {}".format(c_gain)) )
+
+        else:
+            fx = (AudioEffectsChain().speed(speed).custom(
+                "norm {}".format(c_gain)))
 
         signal = fx(signal)
 
@@ -302,7 +311,7 @@ class AugmentedWhamDataset(data.Dataset):
             gains = self.absolute_db_range if i == 0 else (first_lvl - self.max_rel_db_sources,
                                                                       min(first_lvl + self.max_rel_db_sources, 0))
             tmp, c_lvl = self.random_data_augmentation(tmp, gains)
-            tmp = tmp[:self.seg_len]
+            tmp = tmp[:self.seg_len//2]
             if i == 0:
                 first_lvl = c_lvl
 
@@ -315,11 +324,12 @@ class AugmentedWhamDataset(data.Dataset):
             tmp = self.get_random_subsegment(tmp, target_len, tmp_spk_len)
             gains =  (first_lvl - self.max_rel_db_noise, min(first_lvl + self.max_rel_db_noise, 0))
             tmp, _ = self.random_data_augmentation(tmp, gains)
+            tmp = tmp[:self.seg_len]
             sources.append(tmp)
 
         mix = np.mean(np.stack(sources), 0)
 
-        if self.task in ["sep_noiys", "enh_clean"]:
+        if self.task in ["sep_noisy", "enh_clean"]:
             sources = sources[:-1] # discard noise
 
         sources = np.stack(sources)
@@ -329,7 +339,8 @@ class AugmentedWhamDataset(data.Dataset):
 
 
 if __name__ == "__main__":
-    augm = AugmentedWhamDataset("/media/sam/Data/WSJ/WSJ/wsj0/si_tr_s/", "sep_noisy", "/media/sam/Data/WSJ/wham_noise/tr/")
+    augm = AugmentedWhamDataset("/media/sam/Data/WSJ/WSJ/wsj0/si_tr_s/", "sep_clean", "/media/sam/Data/WSJ/wham_noise/tr/")
 
     for e in augm:
+        #sf.write("/tmp/agne.wav", e[0].numpy(), 16000)
         print(e[0].shape)
