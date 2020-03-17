@@ -31,7 +31,11 @@ parser.add_argument('--exp_dir', default='exp/tmp',
 warnings.simplefilter("ignore", UserWarning)
 
 def main(conf):
-    train_set = WhamDataset(conf['data']['train_dir'], conf['data']['task'],
+    if conf["data"]["data_augm"]:
+        from local.augmented_wham import AugmentedWhamDataset
+        train_set = AugmentedWhamDataset("data/wsj0_8k_train","sep_clean", "/disks/disk2/SamCornell/wham/2speakers_wham/wav8k/noise", conf["data"]["train_dir"])
+    else:
+        train_set = WhamDataset(conf['data']['train_dir'], conf['data']['task'],
                             sample_rate=conf['data']['sample_rate'], segment=conf['data']['segment'],
                             nondefault_nsrc=conf['data']['nondefault_nsrc'])
     val_set = WhamDataset(conf['data']['valid_dir'], conf['data']['task'],

@@ -18,7 +18,7 @@ wham_wav_dir=${storage_dir}/2speakers_wham/
 # we use directly wsj0 for data-augmentation. Because original WSJ0 is 16k we copy the data and downsample it offline
 # to use for 8k separation training. This is accomlished in step 3. If only 16k separation is desired one can skip
 # stage 3.
-wsj0_wav_dir_8k=data/wsj0_8k_train
+wsj0_wav_dir_8k=data/wsj0_8k
 
 # Path to the python you'll use for the experiment. Defaults to the current python
 # You can run ./utils/prepare_python_env.sh to create a suitable python environment, paste the output here.
@@ -29,8 +29,8 @@ python_path=python
 # ./run.sh --stage 3 --tag my_tag --task sep_noisy --id 0,1
 
 # General
-stage=2  # Controls from which stage to start
-tag=""  # Controls the directory name associated to the experiment
+stage=3  # Controls from which stage to start
+tag="test"  # Controls the directory name associated to the experiment
 # You can ask for several GPUs using id (passed to CUDA_VISIBLE_DEVICES)
 id=0
 
@@ -92,8 +92,8 @@ fi
 if [[ $stage -le  2 ]]; then
 	# Make json directories with min/max modes and sampling rates
 	echo "Stage 2: Generating json files including wav path and duration"
-	for sr_string in 8 16; do
-		for mode in min max; do
+	for sr_string in 8; do
+		for mode in min; do
 			tmp_dumpdir=data/wav${sr_string}k/$mode
 			echo "Generating json files in $tmp_dumpdir"
 			[[ ! -d $tmp_dumpdir ]] && mkdir -p $tmp_dumpdir
@@ -103,11 +103,6 @@ if [[ $stage -le  2 ]]; then
   done
 fi
 
-if [[ $stage -le 3 ]]; then
-  echo "Creating a resampled WSJ0 version for 8k"
-  python local/resample_dataset.py $wsj0_wav_dir/si_tr_s $wsj0_wav_dir_8k 16000 8000
-
-fi
 
 sr_string=$(($sample_rate/1000))
 suffix=wav${sr_string}k/$mode
@@ -127,7 +122,7 @@ mkdir -p $expdir && echo $uuid >> $expdir/run_uuid.txt
 echo "Results from the following experiment will be stored in $expdir"
 
 
-if [[ $stage -le 4 ]]; then
+if [[ $stage -le 3 ]]; then
   echo "Stage 4: Training"
   mkdir -p logs
   CUDA_VISIBLE_DEVICES=$id $python_path train.py \
@@ -145,7 +140,7 @@ if [[ $stage -le 4 ]]; then
 fi
 
 
-if [[ $stage -le 5 ]]; then
+if [[ $stage -le 4 ]]; then
 	echo "Stage 5 : Evaluation"
 	CUDA_VISIBLE_DEVICES=$id $python_path eval.py \
 	--task $task \
