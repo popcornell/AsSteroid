@@ -110,7 +110,7 @@ class SpeakerStack(nn.Module):
         score = self.mask_net(skip_connection)
         score = score.view(batch, self.n_src, self.out_chan, n_frames)
         est_mask = self.output_act(score) # not needed maybe #TODO ask ?
-        est_mask = est_mask / (torch.sqrt(torch.sum(est_mask**2, 2, keepdim=True) + 1e-8)) # euclidean normalization #TODO ask
+        est_mask = est_mask / (torch.sqrt(torch.sum(est_mask**2, 2, keepdim=True))) # euclidean normalization #TODO ask
         return est_mask
 
     def get_config(self):

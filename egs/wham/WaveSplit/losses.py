@@ -2,7 +2,6 @@ from torch import nn
 import torch
 import numpy as np
 from torch.nn import functional as F
-from torch.autograd import Variable
 from itertools import permutations
 from asteroid.losses.sdr import MultiSrcNegSDR
 import math
@@ -53,33 +52,33 @@ class SpeakerVectorLoss(nn.Module):
 
         utt_embeddings = spk_embeddings[spk_labels].unsqueeze(-1) * spk_mask.unsqueeze(2)
         c_spk = c_spk_vec_perm[:, 0]
-        pair_dist = ((c_spk.unsqueeze(1) - c_spk_vec_perm)**2).sum(2)
+        pair_dist = ((c_spk.unsqueeze(1) - c_spk_vec_perm)**2).mean(2)
         pair_dist = pair_dist[:, 1:]
-        distance = ((c_spk_vec_perm - utt_embeddings)**2).sum(2)
-        return (distance + F.relu(1. - pair_dist).sum(1).unsqueeze(1)).sum(1)
+        distance = ((c_spk_vec_perm - utt_embeddings)**2).mean(2)
+        return (distance + F.relu(1. - pair_dist).mean(1).unsqueeze(1)).mean(1)
 
     def _l_local_speaker(self, c_spk_vec_perm, spk_embeddings, spk_labels, spk_mask):
 
         utt_embeddings = spk_embeddings[spk_labels].unsqueeze(-1) * spk_mask.unsqueeze(2)
-        alpha = torch.clamp(self.alpha, 1e-8)
+        alpha = torch.clamp(self.alpha, 1e8)
 
-        distance = alpha*((c_spk_vec_perm - utt_embeddings)**2).sum(2) + self.beta
-        out = -distance - torch.log(torch.exp(-distance).sum(1)).unsqueeze(1)
+        distance = alpha*((c_spk_vec_perm - utt_embeddings)**2).mean(2) + self.beta
+        out = -distance - torch.log(torch.exp(-distance).mean(1)).unsqueeze(1)
 
-        return out.sum(1)
+        return out.mean(1)
 
     def _l_global_speaker(self, c_spk_vec_perm, spk_embeddings, spk_labels, spk_mask):
 
         utt_embeddings = spk_embeddings[spk_labels].unsqueeze(-1) * spk_mask.unsqueeze(2)
         alpha = torch.clamp(self.alpha, 1e-8)
 
-        distance_utt = alpha*((c_spk_vec_perm - utt_embeddings)**2).sum(2) + self.beta
+        distance_utt = alpha*((c_spk_vec_perm - utt_embeddings)**2).mean(2) + self.beta
 
         B, src, embed_dim, frames = c_spk_vec_perm.size()
         spk_embeddings = spk_embeddings.reshape(1, spk_embeddings.shape[0], embed_dim, 1).expand(B, -1, -1, frames)
-        distances = alpha * ((c_spk_vec_perm.unsqueeze(1) - spk_embeddings.unsqueeze(2)) ** 2).sum(3) + self.beta
-        out = -distance_utt - torch.log(torch.exp(-distances).sum(1))
-        return out.sum(1)
+        distances = alpha * ((c_spk_vec_perm.unsqueeze(1) - spk_embeddings.unsqueeze(2)) ** 2).mean(3) + self.beta
+        out = -distance_utt - torch.log(torch.exp(-distances).mean(1))
+        return out.mean(1)
 
 
     def forward(self, speaker_vectors, spk_mask, spk_labels):
@@ -92,7 +91,7 @@ class SpeakerVectorLoss(nn.Module):
 
         if self.distance_reg:
 
-            pairwise_dist = ((self.spk_embeddings.unsqueeze(0) - self.spk_embeddings.unsqueeze(1))**2).sum(-1)
+            pairwise_dist = ((self.spk_embeddings.unsqueeze(0) - self.spk_embeddings.unsqueeze(1))**2).mean(-1)
             idx = torch.arange(0, pairwise_dist.shape[0])
             pairwise_dist[idx, idx] = np.inf # masking
             distance_reg = -torch.min(torch.log(pairwise_dist), dim=0)[0]
