@@ -42,7 +42,7 @@ mode=min
 nondefault_src=  # If you want to train a network with 3 output streams for example.
 
 # Training
-batch_size=8
+batch_size=1
 num_workers=8
 kernel_size=16
 stride=8

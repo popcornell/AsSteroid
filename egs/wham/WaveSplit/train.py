@@ -45,7 +45,7 @@ class Wavesplit(pl.LightningModule): # redefinition
         self.spk_stack = SpeakerStack(512, 2, 32, 4, 2)
         self.sep_stack = SeparationStack(512, 1, 32, 512, 4, 2, mask_act="sigmoid") # we use batch for masks
 
-        self.spk_loss = SpeakerVectorLoss(101, 32)  # same speakers for validation basically so ok to use same loss #TODO what is the embedding dimension ?
+        self.spk_loss = SpeakerVectorLoss(101, 32, False, "global", 10, 0, 0)  # same speakers for validation basically so ok to use same loss #TODO what is the embedding dimension ?
         self.sep_loss = ClippedSDR(-30)
         params = list(self.enc.parameters()) + list(self.dec.parameters()) + \
                  list(self.spk_stack.parameters()) + list(self.sep_stack.parameters()) + list(self.spk_loss.parameters())
@@ -111,7 +111,7 @@ class Wavesplit(pl.LightningModule): # redefinition
         sep_loss = self.sep_loss(masked, targets)
 
         loss = spk_loss.mean() + sep_loss.mean()
-        return loss
+        return loss, spk_loss.mean(), sep_loss.mean()
 
     @staticmethod
     def pad_output_to_inp(output, inp):
@@ -138,9 +138,9 @@ class Wavesplit(pl.LightningModule): # redefinition
             ``'log'``: dict with tensorboard logs
 
         """
-        loss = self.common_step(batch, batch_nb)
-        tensorboard_logs = {'train_loss': loss}
-        return {'loss': loss, 'log': tensorboard_logs}
+        loss, spk_loss, sep_loss = self.common_step(batch, batch_nb)
+        tensorboard_logs = {'train_loss': loss, "spk_loss": spk_loss, "sep_loss":sep_loss}
+        return {'loss': loss, 'log': tensorboard_logs, 'spk_loss': spk_loss, 'sep_loss': sep_loss}
 
     def validation_step(self, batch, batch_nb):
         """ Need to overwrite PL validation_step to do validation.
@@ -155,8 +155,8 @@ class Wavesplit(pl.LightningModule): # redefinition
 
             ``'val_loss'``: loss
         """
-        loss = self.common_step(batch, batch_nb)
-        return {'val_loss': loss}
+        loss, spk_loss, sep_loss = self.common_step(batch, batch_nb)
+        return {'val_loss': loss, 'val_spk_loss': spk_loss, 'val_sep_loss': sep_loss}
 
     def validation_end(self, outputs):
         """ How to aggregate outputs of `validation_step` for logging.
@@ -175,7 +175,9 @@ class Wavesplit(pl.LightningModule): # redefinition
             ``'progress_bar'``: Tensorboard logs
         """
         avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
-        tensorboard_logs = {'val_loss': avg_loss}
+        avg_spk_loss = torch.stack([x['val_spk_loss'] for x in outputs]).mean()
+        avg_sep_loss = torch.stack([x['val_sep_loss'] for x in outputs]).mean()
+        tensorboard_logs = {'val_loss': avg_loss, "val_spk_loss": avg_spk_loss, "val_sep_loss": avg_sep_loss}
         return {'val_loss': avg_loss, 'log': tensorboard_logs,
                 'progress_bar': tensorboard_logs}
 
