@@ -23,17 +23,18 @@ class ClippedSDR(nn.Module):
 class SpeakerVectorLoss(nn.Module):
 
     def __init__(self, n_speakers, embed_dim=32, learnable_emb=True, loss_type="global",
-                 weight=10, distance_reg=0.3, gaussian_reg=0.2):
+                 weight=10, distance_reg=0.3, gaussian_reg=0.2, return_oracle=True):
         super(SpeakerVectorLoss, self).__init__()
 
         self.loss_type = loss_type
         self.weight = float(weight)
         self.distance_reg = float(distance_reg)
         self.gaussian_reg = float(gaussian_reg)
+        self.return_oracle = return_oracle
 
         assert loss_type in ["distance", "global", "local"]
 
-        spk_emb = torch.rand((n_speakers, embed_dim))  # generaate points in n-dimensional unit sphere
+        spk_emb = torch.rand((n_speakers, embed_dim))  # generate points on n-dimensional unit sphere
         norms = torch.sum(spk_emb ** 2, -1, keepdim=True).sqrt()
         # c = torch.rand((n_speakers + 1, embed_dim))**(1/3)
         spk_emb = spk_emb / norms
@@ -86,7 +87,6 @@ class SpeakerVectorLoss(nn.Module):
         out = -distance_utt - b.squeeze(1) - torch.log(torch.exp(-distances + b).mean(1))
         return out.mean(1)
 
-
     def forward(self, speaker_vectors, spk_mask, spk_labels):
 
         if self.gaussian_reg:
@@ -134,6 +134,11 @@ class SpeakerVectorLoss(nn.Module):
         if self.distance_reg:
             spk_loss += self.distance_reg*distance_reg.mean()
         reordered_sources = torch.gather(speaker_vectors, dim=1, index=min_loss_perm)
+
+        if self.return_oracle:
+            utt_embeddings = spk_embeddings[spk_labels].unsqueeze(-1) * spk_mask.unsqueeze(2)
+            return spk_loss, reordered_sources, utt_embeddings
+
         return spk_loss, reordered_sources
 
 

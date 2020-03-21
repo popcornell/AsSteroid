@@ -8,6 +8,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from collections import OrderedDict
 
 from asteroid.data.wham_dataset import WhamDataset
 from asteroid.engine.system import System
@@ -20,6 +21,7 @@ from asteroid.filterbanks import make_enc_dec
 from wavesplitwham import WaveSplitWhamDataset
 from argparse import Namespace
 from asteroid.utils import flatten_dict
+from copy import deepcopy
 
 # Keys which are not in the conf.yml file can be added here.
 # In the hierarchical dictionary created when parsing, the key `key` can be
@@ -41,15 +43,16 @@ class Wavesplit(pl.LightningModule): # redefinition
     def __init__(self, train_loader,
                  val_loader=None, scheduler=None, config=None):
         super().__init__()
-        self.enc, self.dec = make_enc_dec("free", 512, 16, 8)
-        self.spk_stack = SpeakerStack(512, 2, 32, 4, 2)
-        self.sep_stack = SeparationStack(512, 1, 32, 512, 4, 2, mask_act="sigmoid") # we use batch for masks
+        self.enc_spk, self.dec = make_enc_dec("free", 512, 16, 8)
+        self.enc_sep = deepcopy(self.enc_spk)
+        self.spk_stack = SpeakerStack(512, 2, 512, 1, 1)
+        self.sep_stack = SeparationStack(512, 512, 512, 6, 1, mask_act="sigmoid") # we use batch for masks
 
-        self.spk_loss = SpeakerVectorLoss(101, 32, False, "global", 10, 0, 0)  # same speakers for validation basically so ok to use same loss #TODO what is the embedding dimension ?
+        self.spk_loss = SpeakerVectorLoss(101, 512, False, "global")  # same speakers for validation basically so ok to use same loss #TODO what is the embedding dimension ?
         self.sep_loss = ClippedSDR(-30)
-        params = list(self.enc.parameters()) + list(self.dec.parameters()) + \
+        params = list(self.enc_spk.parameters()) + list(self.enc_sep.parameters()) + list(self.dec.parameters()) + \
                  list(self.spk_stack.parameters()) + list(self.sep_stack.parameters()) + list(self.spk_loss.parameters())
-        self.optimizer = torch.optim.Adam(params, lr=0.001)
+        self.optimizer = torch.optim.Adam(params, lr=0.002)
 
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -68,9 +71,6 @@ class Wavesplit(pl.LightningModule): # redefinition
         Returns:
             :class:`torch.Tensor`
         """
-
-
-
 
         return self.model(*args, **kwargs)
 
@@ -94,23 +94,24 @@ class Wavesplit(pl.LightningModule): # redefinition
             `training_step` and `validation_step` instead.
         """
         inputs, targets, spk_ids = batch
-        tf_rep = self.enc(inputs)
+        tf_rep = self.enc_spk(inputs)
         spk_vectors = self.spk_stack(tf_rep)
         B, src, embed, frames = spk_vectors.size()
-        spk_loss, spk_vectors = self.spk_loss(spk_vectors, torch.ones((B, src, frames)).to(spk_vectors.device), spk_ids)
+        spk_loss, spk_vectors, oracle = self.spk_loss(spk_vectors, torch.ones((B, src, frames)).to(spk_vectors.device), spk_ids)
+        tf_rep = self.enc_sep(inputs)
+        B, n_filters, frames = tf_rep.size()
+        tf_rep = tf_rep[:, None, ...].expand(-1, src, -1, -1).reshape(B*src, n_filters, frames)
+        masks = self.sep_stack(tf_rep, spk_vectors.reshape(B*src, embed, frames))
+        #masks = masks.reshape(B, src, n_filters, frames)
 
-        mask1 = self.sep_stack(tf_rep, spk_vectors[:, 0, :, :]) # fuglyyyy
-        mask2 = self.sep_stack(tf_rep, spk_vectors[:, 1, :, :])
-
-        mask = torch.cat((mask1, mask2), 1)
-
-        masked = tf_rep.unsqueeze(1)*mask
+        masked = tf_rep*masks
+        masked = masked.reshape(B, src, n_filters, frames)
 
         masked = self.pad_output_to_inp(self.dec(masked), inputs)
 
         sep_loss = self.sep_loss(masked, targets)
 
-        loss = spk_loss.mean() + sep_loss.mean()
+        loss = sep_loss.mean() + spk_loss.mean()
         return loss, spk_loss.mean(), sep_loss.mean()
 
     @staticmethod
@@ -139,8 +140,16 @@ class Wavesplit(pl.LightningModule): # redefinition
 
         """
         loss, spk_loss, sep_loss = self.common_step(batch, batch_nb)
-        tensorboard_logs = {'train_loss': loss, "spk_loss": spk_loss, "sep_loss":sep_loss}
-        return {'loss': loss, 'log': tensorboard_logs, 'spk_loss': spk_loss, 'sep_loss': sep_loss}
+
+
+        tqdm_dict = {'train_loss': loss, "spk_loss": spk_loss, "sep_loss": sep_loss}
+        tensorboard_logs = {'train_loss': loss, "spk_loss": spk_loss, "sep_loss": sep_loss}
+        output = OrderedDict({
+            'loss': loss,
+            'progress_bar': tqdm_dict,
+            'log': tensorboard_logs
+        })
+        return output
 
     def validation_step(self, batch, batch_nb):
         """ Need to overwrite PL validation_step to do validation.
