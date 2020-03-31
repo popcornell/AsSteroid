@@ -26,6 +26,10 @@ class SpeakerVectorLoss(nn.Module):
                  weight=10, distance_reg=0.3, gaussian_reg=0.2, return_oracle=True):
         super(SpeakerVectorLoss, self).__init__()
 
+        # not clear how emebeddings are initialized.
+        # if formulas in the paper are copied as such (without .mean() reduction but only with .sum() --> NaNs or huge loss)
+        # i need to implement masking
+
         self.loss_type = loss_type
         self.weight = float(weight)
         self.distance_reg = float(distance_reg)
@@ -56,20 +60,20 @@ class SpeakerVectorLoss(nn.Module):
         pair_dist = ((c_spk.unsqueeze(1) - c_spk_vec_perm)**2).mean(2)
         pair_dist = pair_dist[:, 1:]
         distance = ((c_spk_vec_perm - utt_embeddings)**2).mean(2)
-        return (distance + F.relu(1. - pair_dist).mean(1).unsqueeze(1)).mean(1)
+        return (distance + F.relu(1. - pair_dist).sum(1).unsqueeze(1)).sum(1)
 
     def _l_local_speaker(self, c_spk_vec_perm, spk_embeddings, spk_labels, spk_mask):
 
         utt_embeddings = spk_embeddings[spk_labels].unsqueeze(-1) * spk_mask.unsqueeze(2)
-        alpha = torch.clamp(self.alpha, 1e8)
+        alpha = torch.clamp(self.alpha, 1e-8)
 
         distance = alpha*((c_spk_vec_perm - utt_embeddings)**2).mean(2) + self.beta
         # exp normalize trick
         with torch.no_grad():
             b = torch.max(distance, dim=1, keepdim=True)[0]
-        out = -distance - b - torch.log(torch.exp(-distance + b).mean(1)).unsqueeze(1)
-
-        return out.mean(1)
+        out = -distance + b - torch.log(torch.exp(-distance + b).sum(1)).unsqueeze(1)
+        #out = -distance  - torch.log(torch.exp(-distance).sum(1)).unsqueeze(1)
+        return out.sum(1)
 
     def _l_global_speaker(self, c_spk_vec_perm, spk_embeddings, spk_labels, spk_mask):
 
@@ -84,8 +88,10 @@ class SpeakerVectorLoss(nn.Module):
         # exp normalize trick
         with torch.no_grad():
             b = torch.max(distances, dim=1, keepdim=True)[0]
-        out = -distance_utt - b.squeeze(1) - torch.log(torch.exp(-distances + b).mean(1))
-        return out.mean(1)
+        out = -distance_utt + b.squeeze(1) - torch.log(torch.exp(-distances + b).sum(1))
+        #out = torch.log(torch.exp(-distance_utt) / torch.exp(-distances).sum(1))
+
+        return out.sum(1)
 
     def forward(self, speaker_vectors, spk_mask, spk_labels):
 
@@ -100,7 +106,7 @@ class SpeakerVectorLoss(nn.Module):
             pairwise_dist = ((self.spk_embeddings.unsqueeze(0) - self.spk_embeddings.unsqueeze(1))**2).mean(-1)
             idx = torch.arange(0, pairwise_dist.shape[0])
             pairwise_dist[idx, idx] = np.inf # masking
-            distance_reg = -torch.min(torch.log(pairwise_dist), dim=0)[0]
+            distance_reg = -torch.min(torch.log(pairwise_dist + 1e-8), dim=0)[0]
 
         # speaker vectors B, n_src, dim, frames
         # spk mask B, n_src, frames boolean mask
@@ -132,7 +138,7 @@ class SpeakerVectorLoss(nn.Module):
 
         spk_loss = self.weight*min_loss.mean()
         if self.distance_reg:
-            spk_loss += self.distance_reg*distance_reg.mean()
+            spk_loss += self.distance_reg*distance_reg.sum()
         reordered_sources = torch.gather(speaker_vectors, dim=1, index=min_loss_perm)
 
         if self.return_oracle:
@@ -143,6 +149,13 @@ class SpeakerVectorLoss(nn.Module):
 
 
 if __name__ == "__main__":
+
+    # testing exp normalize average
+    distances = torch.ones((1, 101, 4000))*99
+    with torch.no_grad():
+        b = torch.max(distances, dim=1, keepdim=True)[0]
+    out = b.squeeze(1) - torch.log(torch.exp(-distances + b).sum(1))
+    out2 = - torch.log(torch.exp(-distances).sum(1))
 
     loss_spk = SpeakerVectorLoss(1000, 32, loss_type="distance") # 1000 speakers in training set
 
@@ -156,6 +169,8 @@ if __name__ == "__main__":
     c = ClippedSDR(-30)
     a = torch.rand((2, 3, 200))
     print(c(a, a))
+
+
 
 
 

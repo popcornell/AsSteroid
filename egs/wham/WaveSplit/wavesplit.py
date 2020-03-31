@@ -3,78 +3,105 @@ import torch
 from asteroid.masknn import norms
 from asteroid.masknn import activations
 from asteroid.utils import has_arg
-from asteroid.masknn.blocks import Conv1DBlock
-
-class DilatedResidual(nn.Module):
-
-    def __init__(self, in_chan, out_chan, kernel_size,padding, dilation, groups=1, norm_type="gLN"):
-        super(DilatedResidual, self).__init__()
-
-        self.conv = nn.Conv1d(in_chan, out_chan, kernel_size, 1, padding, dilation, groups=groups)
-        self.nl = nn.PReLU()
-        self.norm = norms.get(norm_type)(out_chan)
-
-    def forward(self, x):
-
-        out = x
-        x = self.norm(self.nl(self.conv(x)))
-
-        return x + out
 
 
-class ConditionedDilatedResidual(nn.Module):
+class Conv1DBlock(nn.Module):
 
-    def __init__(self, in_chan, out_chan, cond_in_chan, kernel_size, padding, dilation, groups=1, norm_type="gLN", use_FiLM=True):
-        super(ConditionedDilatedResidual, self).__init__()
+    def __init__(self, in_chan, hid_chan, kernel_size, padding,
+                 dilation, norm_type="gLN", use_FiLM=True):
+        super(Conv1DBlock, self).__init__()
 
         self.use_FiLM = use_FiLM
+        conv_norm = norms.get(norm_type)
+        in_conv1d = nn.Conv1d(in_chan, hid_chan, 1)
+        self.depth_conv1d = nn.Conv1d(hid_chan, hid_chan, kernel_size,
+                                 padding=padding, dilation=dilation,
+                                 groups=hid_chan)
+        self.squeeze = nn.Sequential(in_conv1d, nn.PReLU(),
+                                          conv_norm(hid_chan))
+        self.unsqueeze = nn.Sequential(nn.PReLU(), conv_norm(hid_chan))
+        self.res_conv = nn.Conv1d(hid_chan, in_chan, 1)
 
-        self.conv = nn.Conv1d(in_chan, out_chan, kernel_size, 1, padding, dilation, groups=groups)
-        self.nl = nn.PReLU()
-        self.norm = norms.get(norm_type)(out_chan)
 
-        self.bias = nn.Linear(cond_in_chan, out_chan)
+    def forward(self, x):
+        """ Input shape [batch, feats, seq]"""
+        squeezed = self.squeeze(x)
+
+        unsqueezed = self.unsqueeze(self.depth_conv1d(squeezed))
+        res_out = self.res_conv(unsqueezed)
+        return res_out
+
+class SepConv1DBlock(nn.Module):
+
+    def __init__(self, in_chan, in_chan_spk_vec, hid_chan, kernel_size, padding,
+                 dilation, norm_type="gLN", use_FiLM=True):
+        super(SepConv1DBlock, self).__init__()
+
+        self.use_FiLM = use_FiLM
+        conv_norm = norms.get(norm_type)
+        in_conv1d = nn.Conv1d(in_chan, hid_chan, 1)
+        self.depth_conv1d = nn.Conv1d(hid_chan, hid_chan, kernel_size,
+                                 padding=padding, dilation=dilation,
+                                 groups=hid_chan)
+        self.squeeze = nn.Sequential(in_conv1d, nn.PReLU(),
+                                          conv_norm(hid_chan))
+        self.unsqueeze = nn.Sequential(nn.PReLU(), conv_norm(hid_chan))
+        self.res_conv = nn.Conv1d(hid_chan, in_chan, 1)
+
+        # FiLM conditioning
         if self.use_FiLM:
-            self.mul =  nn.Linear(cond_in_chan, out_chan)
+            self.mul_lin = nn.Linear(in_chan_spk_vec, hid_chan)
+        self.add_lin = nn.Linear(in_chan_spk_vec, hid_chan)
 
-    def forward(self, x, y):
-        out = x
-        x = self.conv(x)
-        # apply conditioning
-        bias = self.bias(y.transpose(1, -1)).transpose(1, -1)
+    def apply_conditioning(self, spk_vec, squeezed):
+        bias = self.add_lin(spk_vec.transpose(1, -1)).transpose(1, -1)
         if self.use_FiLM:
-            mul = self.mul(y.transpose(1, -1)).transpose(1, -1)
-            x = mul*x + bias
+            mul = self.mul_lin(spk_vec.transpose(1, -1)).transpose(1, -1)
+            return mul*squeezed + bias
         else:
-            x = x + bias
-        x = self.norm(self.nl(x))
-        return x + out
+            return squeezed + bias
+
+    def forward(self, x, spk_vec):
+        """ Input shape [batch, feats, seq]"""
+        squeezed = self.squeeze(x)
+
+        conditioned = self.apply_conditioning(spk_vec, self.depth_conv1d(squeezed))
+        unsqueezed = self.unsqueeze(conditioned)
+        res_out = self.res_conv(unsqueezed)
+        return res_out
 
 
 class SpeakerStack(nn.Module):
-
     # basically this is plain conv-tasnet remove this in future releases
 
-    def __init__(self, in_chan, n_src, out_chan, n_blocks=8, n_repeats=1, kernel_size=3,
+    def __init__(self, in_chan, n_src, out_chan=512, n_blocks=14, n_repeats=1,
+                 bn_chan=128, hid_chan=512, skip_chan=128, kernel_size=3,
                  norm_type="gLN"):
         
         super(SpeakerStack, self).__init__()
         self.in_chan = in_chan
         self.n_src = n_src
+        self.out_chan = out_chan
         self.n_blocks = n_blocks
         self.n_repeats = n_repeats
+        self.bn_chan = bn_chan
+        self.hid_chan = hid_chan
+        self.skip_chan = skip_chan
         self.kernel_size = kernel_size
         self.norm_type = norm_type
-        self.out_chan = out_chan
 
+        layer_norm = norms.get(norm_type)(in_chan)
+        bottleneck_conv = nn.Conv1d(in_chan, bn_chan, 1)
+        self.bottleneck = nn.Sequential(layer_norm, bottleneck_conv)
+        # Succession of Conv1DBlock with exponentially increasing dilation.
         self.TCN = nn.ModuleList()
         for r in range(n_repeats):
             for x in range(n_blocks):
                 padding = (kernel_size - 1) * 2 ** x // 2
-                self.TCN.append(DilatedResidual(in_chan, in_chan,  #TODO ask if also skip connections are used (probably not)
+                self.TCN.append(Conv1DBlock(bn_chan, hid_chan, #TODO ask if also skip connections are used (probably not)
                                             kernel_size, padding=padding,
                                             dilation=2 ** x, norm_type=norm_type))
-        mask_conv = nn.Conv1d(in_chan, n_src * out_chan , 1)
+        mask_conv = nn.Conv1d(skip_chan, n_src * out_chan, 1)
         self.mask_net = nn.Sequential(nn.PReLU(), mask_conv)
 
     def forward(self, mixture_w):
@@ -88,19 +115,22 @@ class SpeakerStack(nn.Module):
                     estimated mask of shape [batch, n_src, n_filters, n_frames]
         """
         batch, n_filters, n_frames = mixture_w.size()
-        output = mixture_w
+        output = self.bottleneck(mixture_w)
         for i in range(len(self.TCN)):
             residual = self.TCN[i](output)
             output = output + residual
-        output = self.mask_net(output)
-        output = output.view(batch, self.n_src, self.out_chan, n_frames)
-        output = output / (torch.sqrt(torch.sum(output**2, 2, keepdim=True))) # euclidean normalization #TODO ask
-        return output
+        emb = self.mask_net(output)
+        emb = emb.view(batch, self.n_src, self.out_chan, n_frames)
+        emb = emb / torch.sqrt(torch.sum(emb**2, 2, keepdim=True))
+        return emb
 
     def get_config(self):
         config = {
             'in_chan': self.in_chan,
             'out_chan': self.out_chan,
+            'bn_chan': self.bn_chan,
+            'hid_chan': self.hid_chan,
+            'skip_chan': self.skip_chan,
             'kernel_size': self.kernel_size,
             'n_blocks': self.n_blocks,
             'n_repeats': self.n_repeats,
@@ -112,44 +142,42 @@ class SpeakerStack(nn.Module):
 
 class SeparationStack(nn.Module):
 
-    # basically this is plain conv-tasnet remove this in future releases
-
-    def __init__(self, in_chan, spk_vect_chan, out_chan=None, n_blocks=10, n_repeats=4, kernel_size=3,
-                 norm_type="gLN",  mask_act="linear"):
+    def __init__(self, in_chan, spk_vec_chan=512, out_chan=None, n_blocks=10, n_repeats=4,
+                 bn_chan=128, hid_chan=512, skip_chan=128, kernel_size=3,
+                 norm_type="gLN", mask_act="linear"):
 
         super(SeparationStack, self).__init__()
         self.in_chan = in_chan
-        if not out_chan:
-            out_chan = in_chan
         self.out_chan = out_chan
-        self.spk_vect_chan = spk_vect_chan
         self.n_blocks = n_blocks
         self.n_repeats = n_repeats
+        self.bn_chan = bn_chan
+        self.hid_chan = hid_chan
+        self.skip_chan = skip_chan
         self.kernel_size = kernel_size
         self.norm_type = norm_type
-        self.mask_act = mask_act
 
+        layer_norm = norms.get(norm_type)(in_chan)
+        bottleneck_conv = nn.Conv1d(in_chan, bn_chan, 1)
+        self.bottleneck = nn.Sequential(layer_norm, bottleneck_conv)
+        # Succession of Conv1DBlock with exponentially increasing dilation.
         self.TCN = nn.ModuleList()
         for r in range(n_repeats):
             for x in range(n_blocks):
                 padding = (kernel_size - 1) * 2 ** x // 2
-                self.TCN.append(
-                    ConditionedDilatedResidual(in_chan, in_chan, spk_vect_chan,  # TODO ask if also skip connections are used (probably not)
-                                    kernel_size, padding=padding,
-                                    dilation=2 ** x, norm_type=norm_type))
-
-        if self.out_chan != self.in_chan:
-            mask_conv = nn.Conv1d(in_chan, out_chan, 1)
-            self.mask_net = nn.Sequential(nn.PReLU(), mask_conv)
-
-        # output activation ?
+                self.TCN.append(SepConv1DBlock(bn_chan, spk_vec_chan, hid_chan,
+                                            kernel_size, padding=padding,
+                                            dilation=2 ** x, norm_type=norm_type))
+        mask_conv = nn.Conv1d(skip_chan, out_chan, 1)
+        self.mask_net = nn.Sequential(nn.PReLU(), mask_conv)
+        # Get activation function.
         mask_nl_class = activations.get(mask_act)
         if has_arg(mask_nl_class, 'dim'):
             self.output_act = mask_nl_class(dim=1)
         else:
             self.output_act = mask_nl_class()
 
-    def forward(self, mixture_w, speaker_vector):
+    def forward(self, mixture_w, spk_vectors):
         """
             Args:
                 mixture_w (:class:`torch.Tensor`): Tensor of shape
@@ -159,20 +187,23 @@ class SeparationStack(nn.Module):
                 :class:`torch.Tensor`:
                     estimated mask of shape [batch, n_src, n_filters, n_frames]
         """
-        output = mixture_w
+        batch, n_filters, n_frames = mixture_w.size()
+        output = self.bottleneck(mixture_w)
         for i in range(len(self.TCN)):
-            residual = self.TCN[i](output, speaker_vector)
+            residual = self.TCN[i](output, spk_vectors) # spk vectors are used in each layer with FiLM
             output = output + residual
-        if self.out_chan != self.in_chan:
-            output = self.mask_net(output)
-        output = self.output_act(output)
-        return output
+        score = self.mask_net(output)
+        score = score.view(batch, self.out_chan, n_frames)
+        est_mask = self.output_act(score)
+        return est_mask
 
     def get_config(self):
         config = {
             'in_chan': self.in_chan,
-            'spk_vect_chan': self.spk_vect_chan,
             'out_chan': self.out_chan,
+            'bn_chan': self.bn_chan,
+            'hid_chan': self.hid_chan,
+            'skip_chan': self.skip_chan,
             'kernel_size': self.kernel_size,
             'n_blocks': self.n_blocks,
             'n_repeats': self.n_repeats,
@@ -182,12 +213,4 @@ class SeparationStack(nn.Module):
         return config
 
 
-if __name__ == "__main__":
 
-    a = torch.rand((3, 512, 200))
-    spk_stack = SpeakerStack(512, 2, 512)
-    vects = spk_stack(a)
-    sep_stack = SeparationStack(512, 512)
-    B, filters, frames = a.size()
-    a = a[:, None, ...].expand(-1, 2, -1, -1).reshape(B*2, filters, frames)
-    sep_stack(a, vects.reshape(B*2, 512, frames))
