@@ -29,7 +29,7 @@ class SpeakerVectorLoss(nn.Module):
         # not clear how emebeddings are initialized.
         # if formulas in the paper are copied as such (without .mean() reduction but only with .sum() --> NaNs or huge loss)
         # i need to implement masking
-
+        self.learnable_emb = learnable_emb
         self.loss_type = loss_type
         self.weight = float(weight)
         self.distance_reg = float(distance_reg)
@@ -88,7 +88,7 @@ class SpeakerVectorLoss(nn.Module):
         # exp normalize trick
         with torch.no_grad():
             b = torch.max(distances, dim=1, keepdim=True)[0]
-        out = -distance_utt + b.squeeze(1) - torch.log(torch.exp(-distances + b).sum(1))
+        out = -distance_utt + b.squeeze(1) - torch.log(torch.exp(-distances + b).mean(1))
         #out = torch.log(torch.exp(-distance_utt) / torch.exp(-distances).sum(1))
 
         return out.sum(1)
@@ -101,12 +101,15 @@ class SpeakerVectorLoss(nn.Module):
         else:
             spk_embeddings = self.spk_embeddings
 
+        if self.learnable_emb or self.gaussian_reg:  # re project on unit sphere
+            spk_embeddings = spk_embeddings / torch.sum(spk_embeddings ** 2, -1, keepdim=True).sqrt()
+
         if self.distance_reg:
 
-            pairwise_dist = ((self.spk_embeddings.unsqueeze(0) - self.spk_embeddings.unsqueeze(1))**2).mean(-1)
+            pairwise_dist = ((spk_embeddings.unsqueeze(0) - spk_embeddings.unsqueeze(1))**2).mean(-1)
             idx = torch.arange(0, pairwise_dist.shape[0])
             pairwise_dist[idx, idx] = np.inf # masking
-            distance_reg = -torch.min(torch.log(pairwise_dist + 1e-8), dim=0)[0]
+            distance_reg = -torch.mean(torch.min(torch.log(pairwise_dist), dim=-1)[0])
 
         # speaker vectors B, n_src, dim, frames
         # spk mask B, n_src, frames boolean mask
@@ -138,7 +141,7 @@ class SpeakerVectorLoss(nn.Module):
 
         spk_loss = self.weight*min_loss.mean()
         if self.distance_reg:
-            spk_loss += self.distance_reg*distance_reg.sum()
+            spk_loss += self.distance_reg*distance_reg
         reordered_sources = torch.gather(speaker_vectors, dim=1, index=min_loss_perm)
 
         if self.return_oracle:
