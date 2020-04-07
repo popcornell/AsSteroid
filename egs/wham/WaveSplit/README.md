@@ -9,3 +9,10 @@ things currently not clear:
 - is VAD used in WSJ02MiX/ WHAM for determining speech activity at frame level ? Some files can have pauses of even one second
 - loss right now is prone to go NaN especially if we don't take the mean after l2-distances computation. 
 - FROM THE PAPER IT SEEMS BOTTLENECK CONVS ARE NOT USED AT ALL KEEPING IT FOR NOW
+
+---
+structure:
+- train.py contains training loop 
+- losses.py wavesplit losses
+- wavesplit.py sep and speaker stacks nets
+- wavesplitwham.py dataset parsing 
