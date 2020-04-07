@@ -26,9 +26,8 @@ class SpeakerVectorLoss(nn.Module):
                  weight=10, distance_reg=0.3, gaussian_reg=0.2, return_oracle=True):
         super(SpeakerVectorLoss, self).__init__()
 
-        # not clear how emebeddings are initialized.
-        # if formulas in the paper are copied as such (without .mean() reduction but only with .sum() --> NaNs or huge loss)
-        # i need to implement masking
+        # not clear how embeddings are initialized.
+
         self.learnable_emb = learnable_emb
         self.loss_type = loss_type
         self.weight = float(weight)
@@ -38,10 +37,9 @@ class SpeakerVectorLoss(nn.Module):
 
         assert loss_type in ["distance", "global", "local"]
 
-        spk_emb = torch.rand((n_speakers, embed_dim))  # generate points on n-dimensional unit sphere
+        spk_emb = torch.rand((n_speakers, embed_dim))
         norms = torch.sum(spk_emb ** 2, -1, keepdim=True).sqrt()
-        # c = torch.rand((n_speakers + 1, embed_dim))**(1/3)
-        spk_emb = spk_emb / norms
+        spk_emb = spk_emb / norms # generate points on n-dimensional unit sphere
 
         if learnable_emb == True:
             self.spk_embeddings = nn.Parameter(spk_emb)
@@ -57,9 +55,9 @@ class SpeakerVectorLoss(nn.Module):
 
         utt_embeddings = spk_embeddings[spk_labels].unsqueeze(-1) * spk_mask.unsqueeze(2)
         c_spk = c_spk_vec_perm[:, 0]
-        pair_dist = ((c_spk.unsqueeze(1) - c_spk_vec_perm)**2).mean(2)
-        pair_dist = pair_dist[:, 1:]
-        distance = ((c_spk_vec_perm - utt_embeddings)**2).mean(2)
+        pair_dist = ((c_spk.unsqueeze(1) - c_spk_vec_perm)**2).sum(2)
+        pair_dist = pair_dist[:, 1:].sqrt()
+        distance = ((c_spk_vec_perm - utt_embeddings)**2).sum(2).sqrt()
         return (distance + F.relu(1. - pair_dist).sum(1).unsqueeze(1)).sum(1)
 
     def _l_local_speaker(self, c_spk_vec_perm, spk_embeddings, spk_labels, spk_mask):
@@ -67,12 +65,11 @@ class SpeakerVectorLoss(nn.Module):
         utt_embeddings = spk_embeddings[spk_labels].unsqueeze(-1) * spk_mask.unsqueeze(2)
         alpha = torch.clamp(self.alpha, 1e-8)
 
-        distance = alpha*((c_spk_vec_perm - utt_embeddings)**2).mean(2) + self.beta
+        distance = alpha*((c_spk_vec_perm - utt_embeddings)**2).sum(2).sqrt() + self.beta
         # exp normalize trick
         with torch.no_grad():
             b = torch.max(distance, dim=1, keepdim=True)[0]
         out = -distance + b - torch.log(torch.exp(-distance + b).sum(1)).unsqueeze(1)
-        #out = -distance  - torch.log(torch.exp(-distance).sum(1)).unsqueeze(1)
         return out.sum(1)
 
     def _l_global_speaker(self, c_spk_vec_perm, spk_embeddings, spk_labels, spk_mask):
@@ -80,17 +77,15 @@ class SpeakerVectorLoss(nn.Module):
         utt_embeddings = spk_embeddings[spk_labels].unsqueeze(-1) * spk_mask.unsqueeze(2)
         alpha = torch.clamp(self.alpha, 1e-8)
 
-        distance_utt = alpha*((c_spk_vec_perm - utt_embeddings)**2).mean(2) + self.beta
+        distance_utt = alpha*((c_spk_vec_perm - utt_embeddings)**2).sum(2).sqrt() + self.beta
 
         B, src, embed_dim, frames = c_spk_vec_perm.size()
         spk_embeddings = spk_embeddings.reshape(1, spk_embeddings.shape[0], embed_dim, 1).expand(B, -1, -1, frames)
-        distances = alpha * ((c_spk_vec_perm.unsqueeze(1) - spk_embeddings.unsqueeze(2)) ** 2).mean(3) + self.beta
+        distances = alpha * ((c_spk_vec_perm.unsqueeze(1) - spk_embeddings.unsqueeze(2)) ** 2).sum(3).sqrt() + self.beta
         # exp normalize trick
         with torch.no_grad():
             b = torch.max(distances, dim=1, keepdim=True)[0]
-        out = -distance_utt + b.squeeze(1) - torch.log(torch.exp(-distances + b).mean(1))
-        #out = torch.log(torch.exp(-distance_utt) / torch.exp(-distances).sum(1))
-
+        out = -distance_utt + b.squeeze(1) - torch.log(torch.exp(-distances + b).sum(1))
         return out.sum(1)
 
     def forward(self, speaker_vectors, spk_mask, spk_labels):
@@ -102,14 +97,16 @@ class SpeakerVectorLoss(nn.Module):
             spk_embeddings = self.spk_embeddings
 
         if self.learnable_emb or self.gaussian_reg:  # re project on unit sphere
+
             spk_embeddings = spk_embeddings / torch.sum(spk_embeddings ** 2, -1, keepdim=True).sqrt()
 
         if self.distance_reg:
 
-            pairwise_dist = ((spk_embeddings.unsqueeze(0) - spk_embeddings.unsqueeze(1))**2).mean(-1)
+            pairwise_dist = ((spk_embeddings.unsqueeze(0) - spk_embeddings.unsqueeze(1))**2).sum(-1)
             idx = torch.arange(0, pairwise_dist.shape[0])
-            pairwise_dist[idx, idx] = np.inf # masking
-            distance_reg = -torch.mean(torch.min(torch.log(pairwise_dist), dim=-1)[0])
+            pairwise_dist[idx, idx] = np.inf # masking with itself
+            pairwise_dist = pairwise_dist.sqrt()
+            distance_reg = -torch.sum(torch.min(torch.log(pairwise_dist), dim=-1)[0])
 
         # speaker vectors B, n_src, dim, frames
         # spk mask B, n_src, frames boolean mask
@@ -139,8 +136,10 @@ class SpeakerVectorLoss(nn.Module):
         min_loss_perm = min_loss_perm.transpose(0, 1).reshape(B, n_src, 1, frames).expand(-1, -1, embed_dim, -1)
         # tot_loss
 
+
         spk_loss = self.weight*min_loss.mean()
         if self.distance_reg:
+
             spk_loss += self.distance_reg*distance_reg
         reordered_sources = torch.gather(speaker_vectors, dim=1, index=min_loss_perm)
 

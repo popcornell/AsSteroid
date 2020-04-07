@@ -45,10 +45,10 @@ class Wavesplit(pl.LightningModule): # redefinition
         super().__init__()
         self.enc_spk, self.dec = make_enc_dec("free", 512, 16, 8)
         self.enc_sep = deepcopy(self.enc_spk)
-        self.spk_stack = SpeakerStack(512, 2, 512, 1, 1)
-        self.sep_stack = SeparationStack(512, 512, 512, 8, 3, mask_act="sigmoid") # we use batch for masks
+        self.spk_stack = SpeakerStack(512, 2, 14, 1)
+        self.sep_stack = SeparationStack(512, 8, 3, mask_act="sigmoid")
 
-        self.spk_loss = SpeakerVectorLoss(101, 512, True, "global", 0.0)  # same speakers for validation basically so ok to use same loss #TODO what is the embedding dimension ?
+        self.spk_loss = SpeakerVectorLoss(101, 512, True, "global")
         self.sep_loss = ClippedSDR(-30)
         params = list(self.enc_spk.parameters()) + list(self.enc_sep.parameters()) + list(self.dec.parameters()) + \
                  list(self.spk_stack.parameters()) + list(self.sep_stack.parameters()) + list(self.spk_loss.parameters())
@@ -101,7 +101,7 @@ class Wavesplit(pl.LightningModule): # redefinition
         tf_rep = self.enc_sep(inputs)
         B, n_filters, frames = tf_rep.size()
         tf_rep = tf_rep[:, None, ...].expand(-1, src, -1, -1).reshape(B*src, n_filters, frames)
-        masks = self.sep_stack(tf_rep, oracle.reshape(B*src, embed, frames))
+        masks = self.sep_stack(tf_rep, spk_vectors.reshape(B*src, embed, frames))
         #masks = masks.reshape(B, src, n_filters, frames)
 
         masked = tf_rep*masks

@@ -8,6 +8,9 @@ from asteroid import torch_utils
 from asteroid.masknn import DPRNN
 from asteroid.engine.optimizers import make_optimizer
 
+
+## FROM THE PAPER IT SEEMS BOTTLENECK CONVS ARE NOT USED AT ALL KEEPING IT FOR NOW
+
 class Model(nn.Module):
     def __init__(self, encoder, masker, decoder):
         super().__init__()
